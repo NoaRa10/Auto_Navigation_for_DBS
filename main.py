@@ -15,9 +15,9 @@ def main():
     # Process all subjects and save their data
     processed_files = extractor.process_all_subjects(output_dir)
     
-    print("\nProcessing complete!")
-    print(f"Processed data saved in: {output_dir}")
-    print("\nProcessed files:")
+    print("\nExtraction complete!")
+    print(f"Extracted data saved in: {output_dir}")
+    print("\nExtracted files:")
     for subject, file_path in processed_files.items():
         print(f"- {subject}: {file_path}")
 

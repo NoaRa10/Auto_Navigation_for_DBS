@@ -262,7 +262,7 @@ class DataExtractor:
                     subject_data = self.process_subject_directory(subject_dir.name)
                     
                     # Create filename for this subject's data
-                    output_file = output_path / f"{subject_dir.name}_processed.json"
+                    output_file = output_path / f"{subject_dir.name}_extracted.json"
                     
                     # Save to JSON file
                     with open(output_file, 'w') as f:
