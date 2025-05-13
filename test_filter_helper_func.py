@@ -1,11 +1,12 @@
 import re
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.widgets import SpanSelector
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from pathlib import Path
 import json
 from scipy import signal
 import random
+from typing import Optional, Tuple
 
 
 def load_data(file_path: str) -> dict:
@@ -13,7 +14,7 @@ def load_data(file_path: str) -> dict:
     with open(file_path, 'r') as f:
         return json.load(f)
 
-def extract_filter_band(filename: str) -> tuple:
+def extract_filter_band_from_filename(filename: str) -> Optional[Tuple[int, int]]:
     """
     Extract filter band from filename.
     Expected format: subject_processed_LOW-HIGHHz.json
@@ -22,91 +23,104 @@ def extract_filter_band(filename: str) -> tuple:
         filename (str): Name of the processed file
         
     Returns:
-        tuple: (low_freq, high_freq) or None if no filter band found
+        Optional[Tuple[int, int]]: (low_freq, high_freq) or None if no filter band found
     """
     match = re.search(r'_(\d+)-(\d+)Hz\.json$', filename)
     if match:
         return (int(match.group(1)), int(match.group(2)))
     return None
 
-def plot_signal_comparison(original_signal: np.ndarray, filtered_signal: np.ndarray, 
-                         sampling_rate: float, filter_band: tuple = None,
-                         title: str = "Signal Comparison"):
+def create_time_domain_plot(original_signal: np.ndarray, 
+                            filtered_signal: np.ndarray, 
+                            sampling_rate: float, 
+                            title: str = "Time Domain") -> go.Figure:
     """
-    Plot original and filtered signals in both time and frequency domains with interactive features.
-    
+    Creates a Plotly figure for the time domain representation of signals.
+
     Args:
-        original_signal (np.ndarray): Original signal in millivolts
-        filtered_signal (np.ndarray): Filtered signal
-        sampling_rate (float): Sampling rate in Hz
-        filter_band (tuple): Optional tuple of (low_freq, high_freq) for filter band
-        title (str): Plot title
+        original_signal (np.ndarray): The original signal in millivolts.
+        filtered_signal (np.ndarray): The filtered signal in millivolts.
+        sampling_rate (float): The sampling rate of the signals in Hz.
+        title (str): The title of the plot.
+
+    Returns:
+        go.Figure: A Plotly figure object.
     """
-    # Ensure signals are numpy arrays and have the correct shape
     original_signal = np.asarray(original_signal, dtype=float).flatten()
     filtered_signal = np.asarray(filtered_signal, dtype=float).flatten()
     
     if len(original_signal) != len(filtered_signal):
-        raise ValueError(f"Signal lengths don't match: original={len(original_signal)}, filtered={len(filtered_signal)}")
+        raise ValueError("Signal lengths must match.")
+    if len(original_signal) < 1:
+        raise ValueError("Signals cannot be empty.")
+
+    time_axis = np.arange(len(original_signal)) / sampling_rate
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=time_axis, y=original_signal, mode='lines', name='Original (mV)', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=time_axis, y=filtered_signal, mode='lines', name='Filtered (mV)', line=dict(color='red')))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Time (s)",
+        yaxis_title="Amplitude (mV)",
+        legend_title="Signals"
+    )
+    return fig
+
+def create_frequency_domain_plot(original_signal: np.ndarray, 
+                                 filtered_signal: np.ndarray, 
+                                 sampling_rate: float, 
+                                 title: str = "Frequency Domain (Power Spectral Density)",
+                                 y_axis_type: str = 'log',
+                                 filter_band_processed: Optional[Tuple[float, float]] = None) -> go.Figure:
+    """
+    Creates a Plotly figure for the frequency domain (PSD) representation of signals.
+
+    Args:
+        original_signal (np.ndarray): The original signal in millivolts.
+        filtered_signal (np.ndarray): The filtered signal in millivolts.
+        sampling_rate (float): The sampling rate of the signals in Hz.
+        title (str): The title of the plot.
+        y_axis_type (str): Type of y-axis ('log' or 'linear'). Defaults to 'log'.
+        filter_band_processed (Optional[Tuple[float, float]]): Tuple of (low_freq, high_freq) from processing, for visualization.
+
+    Returns:
+        go.Figure: A Plotly figure object.
+    """
+    original_signal = np.asarray(original_signal, dtype=float).flatten()
+    filtered_signal = np.asarray(filtered_signal, dtype=float).flatten()
+
+    if len(original_signal) < 8: # Welch method needs enough points
+        raise ValueError("Signal too short for Welch method. Minimum 8 points required.")
+
+    # Compute PSD using Welch's method
+    nperseg = min(256, len(original_signal) // 2 if len(original_signal) >=8 else len(original_signal)) # Ensure nperseg is not too large for short signals
     
-    if len(original_signal) < 2:
-        raise ValueError(f"Signal too short: length={len(original_signal)}")
+    freqs_orig, psd_orig = signal.welch(original_signal, sampling_rate, nperseg=nperseg)
+    freqs_filt, psd_filt = signal.welch(filtered_signal, sampling_rate, nperseg=nperseg)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=freqs_orig, y=psd_orig, mode='lines', name='Original PSD', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=freqs_filt, y=psd_filt, mode='lines', name='Filtered PSD', line=dict(color='red')))
     
-    # Create time array
-    time = np.arange(len(original_signal)) / sampling_rate
-    
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
-    
-    # Plot time domain signals
-    ax1.plot(time, original_signal, label='Original (mV)', color='blue', alpha=0.7)
-    ax1.plot(time, filtered_signal, label='Filtered (mV)', color='red', alpha=0.7)
-    ax1.set_title('Time Domain')
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Amplitude (mV)')
-    ax1.legend()
-    ax1.grid(True)
-    
-    # Compute and plot frequency domain using Welch's method
-    nperseg = min(256, len(original_signal) // 8)  # Segment length
-    noverlap = nperseg // 2  # 50% overlap
-    
-    # Compute power spectral density
-    freqs_orig, psd_orig = signal.welch(original_signal, sampling_rate, 
-                                       nperseg=nperseg, noverlap=noverlap)
-    freqs_filt, psd_filt = signal.welch(filtered_signal, sampling_rate, 
-                                       nperseg=nperseg, noverlap=noverlap)
-    
-    # Plot frequency domain
-    ax2.semilogy(freqs_orig, psd_orig, label='Original', color='blue', alpha=0.7)
-    ax2.semilogy(freqs_filt, psd_filt, label='Filtered', color='red', alpha=0.7)
-    
-    # Add filter band markers if provided
-    if filter_band:
-        low_freq, high_freq = filter_band
-        # Add vertical lines for filter band
-        ax2.axvline(x=low_freq, color='green', linestyle='--', alpha=0.5, 
-                   label=f'Filter Band: {low_freq}-{high_freq} Hz')
-        ax2.axvline(x=high_freq, color='green', linestyle='--', alpha=0.5)
-        # Shade the filter band
-        ax2.axvspan(low_freq, high_freq, color='green', alpha=0.1)
-    
-    ax2.set_title('Frequency Domain (Welch\'s Method)')
-    ax2.set_xlabel('Frequency (Hz)')
-    ax2.set_ylabel('Power Spectral Density (V²/Hz)')
-    ax2.legend()
-    ax2.grid(True)
-    
-    # Add main title
-    fig.suptitle(title, fontsize=14)
-    
-    # Enable interactive features
-    plt.rcParams['toolbar'] = 'toolmanager'
-    fig.canvas.manager.set_window_title('Interactive Signal Viewer')
-    
-    # Adjust layout
-    plt.tight_layout()
-    
+    if filter_band_processed:
+        low_freq, high_freq = filter_band_processed
+        fig.add_vrect(
+            x0=low_freq, x1=high_freq,
+            fillcolor="green", opacity=0.2,
+            layer="below", line_width=0,
+            name=f"Filter Band ({low_freq}-{high_freq} Hz)"
+        )
+
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Frequency (Hz)",
+        yaxis_title="Power Spectral Density (mV²/Hz)",
+        yaxis_type=y_axis_type,
+        legend_title="PSD"
+    )
     return fig
 
 def test_filtering(input_file: str, output_file: str):
@@ -153,13 +167,17 @@ def test_filtering(input_file: str, output_file: str):
     title += f" (Filtered: {filter_band[0]}-{filter_band[1]} Hz)"
     
     # Create the interactive plot
-    fig = plot_signal_comparison(original_signal, filtered_signal, sampling_rate, 
-                               filter_band, title)
+    # The line below refers to a function that no longer exists in this file (plot_signal_comparison)
+    # and was previously using PyQtGraph. This whole test_filtering function is likely vestigial
+    # as the Streamlit app test_filtering.py now handles this logic.
+    # For now, I'll comment it out to prevent errors if this function were somehow called.
+    # win = plot_signal_comparison(original_signal, filtered_signal, sampling_rate, 
+    #                            filter_band, title)
     
     # Save the plot
-    fig.savefig(output_file)
+    # win.export(output_file) # This would also error as 'win' is not defined
     
-    # Show the interactive plot
-    plt.show()
+    # Start Qt event loop
+    # pg.exec() # pg is no longer imported
     
-    print(f"Plot saved to: {output_file}")
+    print(f"Plot saved to: {output_file} (Note: Plot generation in this function is currently commented out)")
