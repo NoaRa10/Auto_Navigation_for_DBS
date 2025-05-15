@@ -25,6 +25,7 @@ env/
 # Processed/Extracted data
 extracted_data/
 processed_data/
+spikes_data/
 
 # Logs
 *.log
