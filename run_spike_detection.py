@@ -89,7 +89,7 @@ def run_spike_detection_pipeline(input_dir, output_dir, n_rms_multiplier=4):
         output_filename = f"{subject_name_base}_spikes_detected.json"
         if "_processed_" in filename and "Hz" in filename : # it was a filtered file
              filter_part = filename.split('_processed_')[1].split('.json')[0]
-             output_filename = f"{subject_name_base}_processed_{filter_part}_spikes_detected.json"
+             output_filename = f"{subject_name_base}_spikes_detected.json"
 
         output_path = os.path.join(output_dir, output_filename)
 

@@ -110,26 +110,84 @@ def create_spike_raster_plot(
     )
     return fig
 
-def create_signal_and_raster_figure(
+def create_waveform_overlay_plot(
+    waveforms: np.ndarray,
+    time_axis_ms: list,
+    title: str = "Spike Waveforms"
+) -> go.Figure:
+    """Creates a Plotly figure showing all spike waveforms overlaid."""
+    fig = go.Figure()
+
+    if len(waveforms) == 0:
+        fig.update_layout(title_text=f"{title} (No waveforms)")
+        return fig
+
+    # Plot each waveform
+    for i, waveform in enumerate(waveforms):
+        fig.add_trace(go.Scatter(
+            x=time_axis_ms,
+            y=waveform,
+            mode='lines',
+            line=dict(color='blue', width=1, opacity=0.3),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+    
+    # Calculate mean waveform and plot it
+    mean_waveform = np.mean(waveforms, axis=0)
+    fig.add_trace(go.Scatter(
+        x=time_axis_ms,
+        y=mean_waveform,
+        mode='lines',
+        name='Mean Waveform',
+        line=dict(color='blue', width=2),
+        showlegend=True
+    ))
+
+    fig.update_layout(
+        title_text=title,
+        xaxis_title="Time (ms)",
+        yaxis_title="Amplitude (mV)",
+        showlegend=True
+    )
+    return fig
+
+def create_combined_visualization(
     filtered_signal: np.ndarray,
     sampling_rate: float,
     raw_spike_times: List[float],
     filtered_spike_times: List[float],
+    waveforms: np.ndarray = None,
+    time_axis_ms: list = None,
     signal_title: str = "Filtered Signal",
     raster_title: str = "Spike Raster",
-    figure_height: int = 700
+    waveform_title: str = "Spike Waveforms",
+    figure_height: int = 700,
+    spike_times_for_waveforms: List[float] = None
 ) -> go.Figure:
-    """Combines the signal plot and spike raster plot into a single figure with shared x-axes."""
+    """
+    Creates a combined figure with three subplots:
+    1. Filtered signal (top left)
+    2. Spike waveform overlay (top right)
+    3. Spike raster plot (bottom left, aligned with filtered signal)
     
+    The time domain signal and raster plot share x-axes for synchronized zooming
+    and are aligned vertically for direct comparison.
+    """
+    
+    # Create subplot layout: 2 plots on top row (signal and waveforms), 1 on bottom left (raster)
     combined_fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.05,
+        rows=2, cols=2,
+        column_widths=[0.7, 0.3],
         row_heights=[0.7, 0.3],
-        subplot_titles=(signal_title, raster_title)
+        vertical_spacing=0.1,
+        horizontal_spacing=0.05,
+        subplot_titles=(signal_title, waveform_title, raster_title, None),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, None]],  # Bottom plot only in first column
     )
 
-    # --- Subplot 1: Filtered Signal ---
+    # --- Subplot 1: Filtered Signal (top left) ---
     if filtered_signal.size > 0:
         filtered_signal_flat = np.asarray(filtered_signal, dtype=float).flatten()
         time_axis_signal = np.arange(len(filtered_signal_flat)) / sampling_rate
@@ -162,14 +220,61 @@ def create_signal_and_raster_figure(
             text="No signal data", 
             xref="paper", 
             yref="paper", 
-            x=0.5, 
+            x=0.25, 
             y=0.85, 
             showarrow=False, 
             row=1, col=1
         )
         combined_fig.update_yaxes(title_text="Amplitude (mV)", row=1, col=1)
 
-    # --- Subplot 2: Spike Raster ---
+    # --- Subplot 2: Waveform Overlay (top right) ---
+    if waveforms is not None and len(waveforms) > 0 and spike_times_for_waveforms is not None:
+        # Create color scale based on spike times
+        min_time = min(spike_times_for_waveforms)
+        max_time = max(spike_times_for_waveforms)
+        time_range = max_time - min_time
+
+        for i in range(len(waveforms)):
+            # Calculate color based on spike time
+            time_fraction = (spike_times_for_waveforms[i] - min_time) / time_range if time_range > 0 else 0.5
+            # Create a color gradient from blue (20,20,140) to purple (140,20,140)
+            blue_val = 140  # Keep blue constant
+            red_val = int(20 + 120 * time_fraction)  # Increase red to create purple
+            color = f'rgba({red_val},20,{blue_val},0.3)'
+            
+            combined_fig.add_trace(go.Scatter(
+                x=time_axis_ms,
+                y=waveforms[i],
+                mode='lines',
+                line=dict(color=color, width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ), row=1, col=2)
+        
+        # Add mean waveform
+        mean_waveform = np.mean(waveforms, axis=0)
+        combined_fig.add_trace(go.Scatter(
+            x=time_axis_ms,
+            y=mean_waveform,
+            mode='lines',
+            name='Mean Waveform',
+            line=dict(color='red', width=2)
+        ), row=1, col=2)
+        
+        combined_fig.update_xaxes(title_text="Time (ms)", row=1, col=2)
+        combined_fig.update_yaxes(title_text="Amplitude (mV)", row=1, col=2)
+    else:
+        combined_fig.add_annotation(
+            text="No waveform data",
+            xref="paper",
+            yref="paper",
+            x=0.75,
+            y=0.85,
+            showarrow=False,
+            row=1, col=2
+        )
+
+    # --- Subplot 3: Spike Raster (bottom left) ---
     if raw_spike_times:
         combined_fig.add_trace(go.Scatter(
             x=raw_spike_times,
@@ -203,7 +308,7 @@ def create_signal_and_raster_figure(
             text="No spike data",
             xref="paper",
             yref="paper",
-            x=0.5,
+            x=0.25,
             y=0.15,
             showarrow=False,
             row=2, col=1
@@ -218,8 +323,13 @@ def create_signal_and_raster_figure(
         row=2, col=1
     )
     
-    # --- General Layout Updates ---
+    # Link x-axes between time domain signal and raster plot
+    combined_fig.update_xaxes(matches='x1', row=2, col=1)  # Match bottom plot x-axis to top-left plot
+    
+    # Update x-axis labels
     combined_fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+    
+    # --- General Layout Updates ---
     combined_fig.update_layout(
         height=figure_height,
         showlegend=True, 

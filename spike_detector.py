@@ -23,6 +23,7 @@ class SpikeDetector:
     def detect_spikes_in_signal(self, signal, n_rms_multiplier=4):
         """
         Detects spikes in a single signal array using RMS-based thresholding.
+        Only detects negative spikes (values below -n_rms_multiplier * RMS).
 
         Args:
             signal (np.array): The signal to analyze (e.g., filtered_signal or signal_mv).
@@ -33,11 +34,11 @@ class SpikeDetector:
         """
         if not isinstance(signal, np.ndarray):
             signal = np.array(signal)
-        if signal.size == 0: # handles empty list, empty array
+        if signal.size == 0:  # handles empty list, empty array
             return {"raw_detected": [], "refractory_filtered": []}
         # Ensure signal is at least 1D (it would be 0D if input was a scalar that became a 0D array)
         if signal.ndim == 0:
-            signal = signal.reshape(1) # Convert 0D scalar array to 1D array with one element
+            signal = signal.reshape(1)  # Convert 0D scalar array to 1D array with one element
         
         # Ensure signal is strictly 1D (e.g., flatten if it was (N,1) or (1,N))
         if signal.ndim > 1:
@@ -45,13 +46,13 @@ class SpikeDetector:
 
         rms_signal = np.sqrt(np.mean(signal**2))
 
-        if rms_signal == 0: # Avoid issues if signal is all zeros
+        if rms_signal == 0:  # Avoid issues if signal is all zeros
             return {"raw_detected": [], "refractory_filtered": []}
 
-        threshold_value = n_rms_multiplier * rms_signal
+        threshold_value = -n_rms_multiplier * rms_signal  # Negative threshold
 
-        # Identify points where the absolute signal value crosses the threshold
-        supra_threshold_mask = np.abs(signal) > threshold_value
+        # Identify points where the signal crosses the negative threshold
+        supra_threshold_mask = signal < threshold_value
         
         detected_spikes = []
         if not np.any(supra_threshold_mask):
@@ -63,18 +64,17 @@ class SpikeDetector:
         
         segment_starts = np.where(diff_mask == 1)[0]
         # end_idx from diff is exclusive for slicing, so segment_ends[i] is the first index *after* the segment
-        segment_ends = np.where(diff_mask == -1)[0] 
+        segment_ends = np.where(diff_mask == -1)[0]
 
         for start_idx, end_idx in zip(segment_starts, segment_ends):
-            segment_values = signal[start_idx:end_idx] # Contains all values in the segment
-            segment_indices = np.arange(start_idx, end_idx) # Original indices for these values
+            segment_values = signal[start_idx:end_idx]  # Contains all values in the segment
+            segment_indices = np.arange(start_idx, end_idx)  # Original indices for these values
 
             if segment_values.size == 0:
                 continue
 
-            # Find the peak (max absolute deviation) within this segment
-            # The peak is the actual signal value (min or max), not its absolute.
-            peak_idx_in_segment = np.argmax(np.abs(segment_values))
+            # Find the minimum value (most negative) within this segment
+            peak_idx_in_segment = np.argmin(segment_values)
             
             peak_amplitude = segment_values[peak_idx_in_segment]
             peak_original_idx = segment_indices[peak_idx_in_segment]
@@ -86,9 +86,9 @@ class SpikeDetector:
                 "index": int(peak_original_idx)
             })
         
-        # Sort detected spikes by time.
+        # Sort detected spikes by time
         detected_spikes.sort(key=lambda x: x["time_s"])
-        raw_detected_spikes = list(detected_spikes) # Store a copy of raw detections
+        raw_detected_spikes = list(detected_spikes)  # Store a copy of raw detections
 
         # Define refractory/window parameters
         ref_before_s = 0.001  # 1 ms
@@ -150,8 +150,10 @@ class SpikeDetector:
     def process_all_samples(self, n_rms_multiplier=4):
         """
         Processes all samples in the loaded subject data to detect spikes.
-        Modifies the self.data dictionary in place by adding a "spikes_raw_detected" and "spikes_refractory_filtered" key
-        to each sample.
+        Modifies the self.data dictionary in place by adding:
+        - "spikes_raw_detected": All detected spikes
+        - "spikes_refractory_filtered": Filtered spikes with their waveforms
+        - "spike_waveform_metadata": Information about waveform extraction parameters
 
         Args:
             n_rms_multiplier (float): The RMS multiplier for the threshold.
@@ -159,6 +161,13 @@ class SpikeDetector:
         if "samples" not in self.data or not isinstance(self.data["samples"], dict):
             print("Warning: No samples found or samples format is incorrect.")
             return self.data # Return original data if no samples
+
+        # Add waveform extraction parameters to metadata
+        if "subject_metadata" in self.data:
+            self.data["subject_metadata"]["spike_waveform_params"] = {
+                "before_ms": 2.0,  # Time before spike peak
+                "after_ms": 3.0    # Time after spike peak
+            }
 
         for sample_name, sample_data in self.data["samples"].items():
             signal_to_process = None
@@ -180,15 +189,45 @@ class SpikeDetector:
                     sample_data["spikes_refractory_filtered"] = []
                     continue
 
+                # Detect spikes
                 spike_detection_results = self.detect_spikes_in_signal(
                     signal_to_process, 
                     n_rms_multiplier=n_rms_multiplier
                 )
+                
+                # Extract waveforms for refractory-filtered spikes
+                waveforms_data = self.extract_spike_waveforms(
+                    signal=signal_to_process,
+                    spike_times_list=spike_detection_results["refractory_filtered"],
+                    before_ms=2,
+                    after_ms=3
+                )
+
+                # Add waveforms to each spike in refractory_filtered
+                refractory_filtered_with_waveforms = []
+                for i, spike in enumerate(spike_detection_results["refractory_filtered"]):
+                    if spike["index"] in waveforms_data["spike_indices"]:
+                        # Find the index of this spike in the waveforms data
+                        waveform_idx = waveforms_data["spike_indices"].index(spike["index"])
+                        spike_with_waveform = spike.copy()
+                        spike_with_waveform["waveform"] = waveforms_data["waveforms"][waveform_idx].tolist()
+                        refractory_filtered_with_waveforms.append(spike_with_waveform)
+                    else:
+                        # If for some reason we couldn't extract the waveform, still keep the spike
+                        refractory_filtered_with_waveforms.append(spike)
+
+                # Store results
                 sample_data["spikes_raw_detected"] = spike_detection_results["raw_detected"]
-                sample_data["spikes_refractory_filtered"] = spike_detection_results["refractory_filtered"]
+                sample_data["spikes_refractory_filtered"] = refractory_filtered_with_waveforms
+                sample_data["spike_waveform_metadata"] = {
+                    "time_axis_ms": waveforms_data["time_axis"].tolist(),
+                    "before_ms": 2.0,
+                    "after_ms": 3.0
+                }
             else:
                 sample_data["spikes_raw_detected"] = []
                 sample_data["spikes_refractory_filtered"] = []
+                sample_data["spike_waveform_metadata"] = None
         
         return self.data
 
@@ -224,6 +263,57 @@ class SpikeDetector:
                 last_accepted_time = current_spike["time_s"]
         
         return validated_spikes
+
+    def extract_spike_waveforms(self, signal, spike_times_list, before_ms=2, after_ms=3):
+        """
+        Extracts spike waveforms from the signal based on spike times.
+        
+        Args:
+            signal (np.ndarray): The signal to extract waveforms from (typically filtered_signal)
+            spike_times_list (list): List of dictionaries containing spike information with 'time_s' field
+            before_ms (float): Time in milliseconds to extract before the spike peak (default: 2)
+            after_ms (float): Time in milliseconds to extract after the spike peak (default: 3)
+            
+        Returns:
+            dict: A dictionary containing:
+                - 'waveforms': List of extracted waveforms as numpy arrays
+                - 'time_axis': Time axis for the waveforms in milliseconds
+                - 'spike_indices': Original indices of successfully extracted waveforms
+        """
+        if not isinstance(signal, np.ndarray):
+            signal = np.array(signal)
+        
+        # Ensure signal is 1D
+        signal = signal.ravel()
+        signal_length = signal.size
+        
+        # Convert ms to samples
+        samples_before = int(before_ms * self.sampling_rate / 1000)
+        samples_after = int(after_ms * self.sampling_rate / 1000)
+        waveform_length = samples_before + samples_after + 1  # +1 for the peak sample
+        
+        # Initialize lists to store results
+        waveforms = []
+        valid_spike_indices = []
+        
+        # Create time axis in milliseconds for the waveforms
+        time_axis = np.arange(-samples_before, samples_after + 1) * 1000 / self.sampling_rate
+        
+        for spike in spike_times_list:
+            spike_idx = spike['index']
+            
+            # Check if we can extract the full waveform
+            if spike_idx >= samples_before and spike_idx + samples_after < signal_length:
+                # Extract waveform
+                waveform = signal[spike_idx - samples_before : spike_idx + samples_after + 1]
+                waveforms.append(waveform)
+                valid_spike_indices.append(spike_idx)
+        
+        return {
+            'waveforms': np.array(waveforms) if waveforms else np.array([]),
+            'time_axis': time_axis,
+            'spike_indices': valid_spike_indices
+        }
 
 # Example Usage (for testing, typically run from another script):
 # if __name__ == '__main__':

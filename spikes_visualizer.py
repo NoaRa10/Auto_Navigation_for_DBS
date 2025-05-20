@@ -5,10 +5,7 @@ from pathlib import Path
 import re
 
 # Import the new main plotting function from the helper file
-from spikes_visualization_helper_func import create_signal_and_raster_figure, load_data # Assuming load_data is still used from here
-# Import the SpikeDetector class 
-# IMPORTANT: Ensure this path is correct for your SpikeDetector class definition
-from spike_detector import SpikeDetector 
+from spikes_visualization_helper_func import create_combined_visualization, load_data
 
 st.set_page_config(layout="wide")
 st.title("Spike Visualization Dashboard")
@@ -21,7 +18,6 @@ if 'selected_file_name' not in st.session_state:
 
 # --- File and Subject Selection Logic ---
 st.sidebar.header("Data File Selection")
-# Ensure this is the correct directory for your JSON files that are input to SpikeDetector
 processed_data_dir = Path("spikes_data") 
 
 if not processed_data_dir.exists():
@@ -29,17 +25,13 @@ if not processed_data_dir.exists():
     st.error(f"Directory '{processed_data_dir}' not found. Please create it and add your data files.")
     st.stop()
 
-# Adjust glob pattern if your files processed by SpikeDetector have a different naming scheme
-# This example assumes they might still be named similarly to before, or a generic JSON pattern.
 all_input_files = [f.name for f in processed_data_dir.glob("*.json")] 
-# If you have a more specific pattern for files that *SpikeDetector* processes, use it e.g., "*_processed.json"
 
 if not all_input_files:
     st.sidebar.warning(f"No JSON files found in {processed_data_dir}.")
     st.info(f"No JSON files found in '{processed_data_dir}'. Please add data files for spike detection.")
     st.stop()
 
-# Regex to extract subject ID, assuming filenames like "Subject_X...json"
 subject_names = sorted(list(set([re.match(r"^(Subject_[^_]+)_.*", f).group(1)
                                 for f in all_input_files
                                 if re.match(r"^(Subject_[^_]+)_.*", f)])))
@@ -89,22 +81,10 @@ if not input_file_path.exists():
 
 st.header(f"Visualizing: {st.session_state.selected_subject} - File: {st.session_state.selected_file_name}")
 
-# Load data that will be processed by SpikeDetector
-# The `load_data` function is from spikes_visualization_helper_func.py
-data_to_process = load_data(str(input_file_path)) 
+# Load the processed data with spikes
+data = load_data(str(input_file_path))
 
-# Initialize SpikeDetector and process samples
-# This will add 'spikes_raw_detected' and 'spikes_refractory_filtered' to each sample
-try:
-    spike_detector_instance = SpikeDetector(data_to_process) # Pass the loaded data to the detector
-    # process_all_samples modifies the data in-place and returns it
-    processed_data_with_spikes = spike_detector_instance.process_all_samples()
-except Exception as e:
-    st.error(f"Error during SpikeDetector initialization or processing: {e}")
-    st.exception(e) # Provides more detailed traceback in the console/log
-    st.stop()
-
-metadata = processed_data_with_spikes.get('subject_metadata')
+metadata = data.get('subject_metadata')
 if not metadata:
     st.error("Subject metadata not found in the processed file.")
     st.stop()
@@ -114,9 +94,9 @@ if sampling_rate is None:
     st.error("Sampling rate not found in metadata.")
     st.stop()
 
-filter_band_from_metadata = metadata.get('filter_band') # Optional: for display
+filter_band_from_metadata = metadata.get('filter_band')
 
-samples_dict = processed_data_with_spikes.get('samples')
+samples_dict = data.get('samples')
 if not samples_dict:
     st.error("No samples found in the processed data.")
     st.stop()
@@ -138,48 +118,59 @@ else:
     st.stop()
 
 current_sample_data = samples_dict[selected_sample_key]
-# Prioritize filtered_signal, fallback to signal_mv if not present
 filtered_signal = np.array(current_sample_data.get('filtered_signal', current_sample_data.get('signal_mv', [])))
 
 if filtered_signal.size == 0:
     st.error(f"Signal data ('filtered_signal' or 'signal_mv') is missing or empty for sample '{selected_sample_key}'.")
     st.stop()
 
-# Extract spike times for the raster plot
-# These keys are added by SpikeDetector.process_all_samples()
+# Extract spike times and waveforms
 raw_spikes_list = current_sample_data.get('spikes_raw_detected', [])
 filtered_spikes_list = current_sample_data.get('spikes_refractory_filtered', [])
 
 raw_spike_times = [spike['time_s'] for spike in raw_spikes_list if isinstance(spike, dict) and 'time_s' in spike]
 filtered_spike_times = [spike['time_s'] for spike in filtered_spikes_list if isinstance(spike, dict) and 'time_s' in spike]
 
+# Extract waveforms and time axis
+waveforms = None
+time_axis_ms = None
+if filtered_spikes_list and 'waveform' in filtered_spikes_list[0]:
+    waveforms = np.array([spike['waveform'] for spike in filtered_spikes_list if 'waveform' in spike])
+    waveform_metadata = current_sample_data.get('spike_waveform_metadata', {})
+    time_axis_ms = waveform_metadata.get('time_axis_ms')
+
 if filter_band_from_metadata:
     st.subheader(f"Data in file (filter: {filter_band_from_metadata[0]}-{filter_band_from_metadata[1]} Hz if applied before spike detection)")
 else:
     st.subheader("Filter band from original metadata not specified.")
 
-# --- Plotting using the dedicated helper function ---
-plot_title_prefix = f"{st.session_state.selected_subject} - Sample {selected_sample_key}"
-
-# Call the combined plotting function
-fig = create_signal_and_raster_figure(
+# Create the visualization
+fig = create_combined_visualization(
     filtered_signal=filtered_signal,
     sampling_rate=sampling_rate,
     raw_spike_times=raw_spike_times,
     filtered_spike_times=filtered_spike_times,
-    signal_title=f"{plot_title_prefix} - Filtered Signal", # Pass specific title for signal subplot
-    raster_title="Spike Raster" # Pass specific title for raster subplot
+    waveforms=waveforms,
+    time_axis_ms=time_axis_ms,
+    signal_title=f"{st.session_state.selected_subject} - Sample {selected_sample_key} - Filtered Signal",
+    raster_title="Spike Raster",
+    waveform_title="Spike Waveforms",
+    spike_times_for_waveforms=filtered_spike_times
 )
+
+# Display the figure
 st.plotly_chart(fig, use_container_width=True)
 
 # Display spike counts
 st.write(f"Number of raw spikes detected: {len(raw_spike_times)}")
 st.write(f"Number of refractory-filtered spikes: {len(filtered_spike_times)}")
+if waveforms is not None:
+    st.write(f"Number of extracted waveforms: {len(waveforms)}")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**How to use:**")
 st.sidebar.markdown("1. Ensure JSON files are in the `spikes_data` directory.")
 st.sidebar.markdown("2. Select a Subject, File, and Sample.")
-st.sidebar.markdown("3. View the filtered signal and spike raster plots.")
+st.sidebar.markdown("3. View the filtered signal, spike waveforms, and raster plots.")
 
 # To run this app: streamlit run spikes_visualizer.py 
