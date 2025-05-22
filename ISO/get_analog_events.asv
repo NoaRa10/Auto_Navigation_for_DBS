@@ -1,0 +1,58 @@
+% get_analog_events
+% split the analog to 3 sets 
+% in: rawAnalog    - raw analog signal 
+%        apIndex - index of the spikes in analog signal - there might be a
+%                            shift between the index and the "real" time of the event
+% out:  ALL output parameters are analog signals after up-sampeling the data
+%           analog- the normelized analog
+%          apAnalog  - Each rows of the matrix is the analog signal of a spikes     
+%                                      the data is aligned to the minimal peak    
+%           highNoise  - Each row of the matrix is the analog signal of a high noise event that is not a spikes                                     
+%           apInx - the index of the spikes after fixing the shift
+%           noiseInx -the index of the high noise events
+function [ analog, apAnalog, highNoise,  apInx, noiseInx ] =  get_analog_events(rawAnalog, apIndex)
+global TEST_SORT_MAX_EVENTS;
+global TEST_SORT_SPIKE_THRESHOLD_RATIO;
+global TEST_SORT_SPIKE_THRESHOLD;
+global TEST_SORT_SPIKE_THRESHOLD_MIN_FRACTION;
+min_frac = TEST_SORT_SPIKE_THRESHOLD_MIN_FRACTION;
+error(nargchk(2,2,nargin))
+numAp = min([TEST_SORT_MAX_EVENTS, length(apIndex)]);
+analog  = normelize_analog(rawAnalog);
+% analog=rawAnalog;
+
+[apAnalog  shift]  = get_analog_ap(analog, apIndex, numAp,1);
+apInx= apIndex - shift;
+[min_val min_inx] =  min(mean(apAnalog,1)); 
+
+% threshold =min_val /TEST_SORT_SPIKE_THRESHOLD_RATIO;
+% threshold = max( threshold , -std(analog) *TEST_SORT_SPIKE_THRESHOLD);
+% [highNoise, noiseInx] =  get_high_noise_events(analog, apInx, threshold);
+
+% is the noise cluster is too small make it bigger by using a threshold
+% relative to the small spike events
+% if(length(noiseInx) < length(apIndex))
+    [sort_val sort_inx] =sort(apAnalog(:, min_inx));
+    use_for_threshold = ceil(length(sort_val)* min_frac);
+    lower_avg = mean(sort_val(end+1-use_for_threshold:end));
+    threshold =lower_avg /TEST_SORT_SPIKE_THRESHOLD_RATIO;
+    %threshold = max( threshold , -std(analog) *TEST_SORT_SPIKE_THRESHOLD);
+     [highNoise, noiseInx] =  get_high_noise_events(analog, apInx, threshold);
+%end
+
+% save the porportion between the number of noise and spike events
+total_spikes = length(apInx);
+total_noise = length(noiseInx);
+num_analog_spikes = size(apAnalog,1);
+num_analog_noise = size(highNoise,1);
+
+if(total_spikes > total_noise)
+     num_test_spikes= num_analog_spikes;
+     num_test_noise = floor(total_noise * num_analog_spikes /total_spikes);
+else
+    num_test_noise = num_analog_noise;
+    num_test_spikes = floor(total_spikes * num_analog_noise / total_noise);
+end
+
+apAnalog = apAnalog(1:min(num_test_spikes, size(apAnalog,1)),:);
+highNoise= highNoise(1:min(num_test_noise, size(highNoise,1)),:);

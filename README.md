@@ -6,6 +6,8 @@ This project processes DBS (Deep Brain Stimulation) electrophysiological data fr
 
 - Python 3.7 or higher
 - Required packages are listed in `requirements.txt`
+- MATLAB installation (R2021a or later recommended) for isolation score calculation
+- ISO directory added to MATLAB path
 
 ## Installation
 
@@ -29,6 +31,11 @@ The script will:
 - Extract and process CRAW data from the files
 - Save the processed data to `processed_data/processed_data.json`
 
+To calculate isolation scores for detected spikes:
+```bash
+python run_iso_score_calculation.py
+```
+
 ## Data Processing Details
 
 The script processes files according to the following criteria:
@@ -43,6 +50,7 @@ Spikes are detected using the following criteria:
 - Threshold is set at -4 * RMS of the signal (detecting negative peaks only)
 - Refractory period of 1ms before and 2ms after each spike
 - For each detected spike, a waveform snippet is extracted (2ms before and 3ms after the peak)
+- Isolation scores are calculated to assess spike detection quality
 
 ## Output
 
@@ -102,7 +110,7 @@ This file contains the signal data converted to millivolts and, optionally, filt
 
 ### 3. Spike Detection Data (`<subject_name>_spikes_detected.json`)
 
-This file builds upon the processed data by adding detected spike information, including raw detections, refractory-filtered spikes, and their waveforms.
+This file builds upon the processed data by adding detected spike information, including raw detections, refractory-filtered spikes, their waveforms, and isolation scores.
 
 ```json
 {
@@ -154,6 +162,12 @@ This file builds upon the processed data by adding detected spike information, i
                 "time_axis_ms": [-2.0, -1.9, ..., 0, ..., 2.9, 3.0], // Time points for waveform plotting
                 "before_ms": 2.0,
                 "after_ms": 3.0
+            },
+            "isolation_scores": { // Quality metrics for spike detection
+                "snr_ap": 2.5,      // Signal-to-Noise Ratio
+                "fn_score": 0.95,    // False Negative Score
+                "fp_score": 0.02,    // False Positive Score
+                "isolation_score": 0.98  // Overall Isolation Score
             }
         }
         // ... more samples
